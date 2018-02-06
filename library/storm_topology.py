@@ -43,19 +43,31 @@ options:
     default: None
   state:
     description:
-      - 'target topology state: active,stopped,inactive,restarted,reloaded,get'
+      - 'target topology state: C(active), C(inactive), C(killed), C(nonexistent), C(existing), C(get)'
+      - 'C(active): Set in C(active) state if was C(inactive). Error if topology does not exists'
+      - 'C(inactive): Set in C(inactiveà state if was C(active). Error if topology does not exists'
+      - 'C(killed): Issue a kill command if topology is existing. If not, or already in C(killed) state, do nothing. Exit immediately.' 
+      - 'C(nonexistent): Issue a kill command if topology is existing. If not, or already in C(killed) state, do nothing. Wait for the topology to be removed.' 
+      - 'C(existing): Do nothing, but wait for the topology to be running' 
+      - 'C(get): Do nothing. Return current topology status' 
     required: true
-    default: None
-  launching_script:
-    description:
-      - 'Script to launch topology. Must be an absolute path'
-    required: If state==started,restarted or reloaded
     default: None
   kerberos:
     description:
       - 'Boolean. Storm UI access require kerberos authentication'
     required: false
     default: false
+  wait_time_secs:
+    description:
+      - 'Integer. The wait_time in seconds provided to the C(kill) command' 
+      - '(Delay between spouts deactivation and topology destruction)'
+    required: false
+    default: 30
+  timeout_secs:
+    description:
+      - 'Timeout value when waiting a target state' 
+    required: false
+    default: 60
 '''
 
 EXAMPLES = '''
@@ -110,7 +122,7 @@ class Status:
     INACTIVE="INACTIVE"
     REBALANCING="REBALANCING"   
     KILLED="KILLED"
-    UNEXISTING="UNEXISTING"
+    NONEXISTENT="nonexistent"
 
 # Some tokens of interest in the json response
 class Token:
@@ -122,7 +134,7 @@ class State:
     ACTIVE="active"
     KILLED="killed"
     INACTIVE="inactive"
-    UNEXISTING="unexisting"
+    NONEXISTENT="nonexistent"
     EXISTING="existing"
     GET="get"
 
@@ -181,7 +193,7 @@ class StormRestApi:
                     self.post("/api/v1/topology/{}/kill/{}".format(topology[Token.ID], p.waitTimeSecs))
         else:
             pass    # Normal case
-            #error("Unexisting topology {}".format(p.name))
+            #error("Nonexistent topology {}".format(p.name))
             
     def activateTopology(self, p):
         topology = self.getTopologyByName(p.name)
@@ -191,7 +203,7 @@ class StormRestApi:
                 if not p.checkMode:
                     self.post("/api/v1/topology/{}/activate".format(topology[Token.ID]))
         else:
-            error("Unexisting topology {}".format(p.name))
+            error("Nonexistent topology {}".format(p.name))
 
     def deactivateTopology(self, p):
         topology = self.getTopologyByName(p.name)
@@ -201,7 +213,7 @@ class StormRestApi:
                 if not p.checkMode:
                     self.post("/api/v1/topology/{}/deactivate".format(topology[Token.ID]))
         else:
-            error("Unexisting topology {}".format(p.name))
+            error("Nonexistent topology {}".format(p.name))
 
 
 
@@ -213,7 +225,7 @@ def main():
         argument_spec = dict(
             ui_url = dict(required=True),
             name = dict(required=True),
-            state = dict(required=True, choices=['active','killed','inactive','existing','unexisting','get']),
+            state = dict(required=True, choices=['active','killed','inactive','existing','nonexistent','get']),
             wait_time_secs = dict(required=False, type='int', default=30),
             timeout_secs = dict(required=False, type='int', default=60),
             kerberos = dict(required=False, type='bool', default=False),
@@ -252,7 +264,7 @@ def main():
         api.deactivateTopology(p)
     elif p.state == State.KILLED:
         api.killTopology(p)
-    elif p.state == State.UNEXISTING:
+    elif p.state == State.NONEXISTENT:
         api.killTopology(p)
         topology = api.getTopologyByName(p.name)
         limit = time.time() + p.timeoutSecs
@@ -281,7 +293,7 @@ def main():
     if topology != None:
         status = topology[Token.STATUS]
     else:
-        status = Status.UNEXISTING
+        status = Status.NONEXISTENT
     module.exit_json(changed=p.changed, status=status.lower(), logs=logs)
 
 
