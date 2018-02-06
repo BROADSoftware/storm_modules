@@ -81,10 +81,25 @@ except ImportError:
 
 # Global, to allow access from error
 module = None
+logs = []
+logLevel = 'None'
+
+    
+def log(level, message, *args):
+    x = level+':' + message.format(*args)
+    logs.append(x)
+        
+def debug(message, *args):
+    if logLevel == 'debug' or logLevel == "info":
+        log("DEBUG", message, *args)
+
+def info(message, *args):
+    if logLevel == "info" :
+        log("INFO", message, *args)
 
 def error(message, *args):
     x = "" + message.format(*args)
-    module.fail_json(msg = x)    
+    module.fail_json(msg = x, logs=logs)    
 
 class Parameters:
     pass
@@ -108,6 +123,7 @@ class State:
     KILLED="killed"
     INACTIVE="inactive"
     UNEXISTING="unexisting"
+    EXISTING="existing"
     GET="get"
 
 class StormRestApi:
@@ -125,6 +141,7 @@ class StormRestApi:
     def get(self, path):
         url = self.endpoint + path
         resp = requests.get(url, auth=self.kerberos_auth)
+        debug("HTTP GET({})  --> {}".format(url, resp.status_code))
         if resp.status_code == 200:
             result = resp.json()
             return result
@@ -134,6 +151,7 @@ class StormRestApi:
     def post(self, path):
         url = self.endpoint + path
         resp = requests.post(url, auth=self.kerberos_auth)
+        debug("HTTP POST({})  --> {}".format(url, resp.status_code))
         if resp.status_code != 200:
             result = resp.json()
             if result != None:
@@ -159,17 +177,18 @@ class StormRestApi:
         if topology != None:
             if topology[Token.STATUS] != Status.KILLED:
                 p.changed = True
-                if not p.check_mode:
-                    self.post("/api/v1/topology/{}/kill/{}".format(topology[Token.ID], p.waitTime))
+                if not p.checkMode:
+                    self.post("/api/v1/topology/{}/kill/{}".format(topology[Token.ID], p.waitTimeSecs))
         else:
-            error("Unexisting topology {}".format(name))
+            pass    # Normal case
+            #error("Unexisting topology {}".format(p.name))
             
     def activateTopology(self, p):
         topology = self.getTopologyByName(p.name)
         if topology != None:
             if topology[Token.STATUS] == Satus.INACTIVE:
                 p.changed = True
-                if not p.check_mode:
+                if not p.checkMode:
                     self.post("/api/v1/topology/{}/activate".format(topology[Token.ID]))
         else:
             error("Unexisting topology {}".format(p.name))
@@ -179,7 +198,7 @@ class StormRestApi:
         if topology != None:
             if topology[Token.STATUS] == Status.ACTIVE:
                 p.changed = True
-                if not p.check_mode:
+                if not p.checkMode:
                     self.post("/api/v1/topology/{}/deactivate".format(topology[Token.ID]))
         else:
             error("Unexisting topology {}".format(p.name))
@@ -194,9 +213,11 @@ def main():
         argument_spec = dict(
             ui_url = dict(required=True),
             name = dict(required=True),
-            state = dict(required=True, choices=['active','killed','inactive','get']),
-            wait_time = dict(required=False, type='int', default=30),
-            kerberos = dict(required=False, type='bool', default=False)
+            state = dict(required=True, choices=['active','killed','inactive','existing','unexisting','get']),
+            wait_time_secs = dict(required=False, type='int', default=30),
+            timeout_secs = dict(required=False, type='int', default=60),
+            kerberos = dict(required=False, type='bool', default=False),
+            log_level = dict(required=False, default="None")
             
         ),
         supports_check_mode=True
@@ -209,10 +230,18 @@ def main():
     p.uiUrl = module.params['ui_url']
     p.name = module.params['name']
     p.state = module.params['state']
-    p.waitTime = module.params['wait_time']
+    p.waitTimeSecs = module.params['wait_time_secs']
+    p.timeoutSecs = module.params['timeout_secs']
     p.kerberos = module.params['kerberos']
+    p.logLevel = module.params['log_level']
     p.checkMode = module.check_mode
     p.changed = False
+    
+    global  logLevel
+    logLevel = p.logLevel
+    
+    if p.uiUrl.endswith("/"):
+        p.uiUrl = p.uiUrl[:-1]
 
     api = StormRestApi(p.uiUrl, p.kerberos)
     
@@ -225,10 +254,24 @@ def main():
         api.killTopology(p)
     elif p.state == State.UNEXISTING:
         api.killTopology(p)
-        topology = self.getTopologyByName(p.name)
+        topology = api.getTopologyByName(p.name)
+        limit = time.time() + p.timeoutSecs
         while topology != None:
+            if time.time() > limit:
+                error("Timeout exceeded")
+                break
             time.sleep(1)
-            topology = self.getTopologyByName(p.name)
+            topology = api.getTopologyByName(p.name)
+    elif p.state == State.EXISTING:
+        topology = api.getTopologyByName(p.name)
+        limit = time.time() + p.timeoutSecs
+        while topology == None:
+            if time.time() > limit:
+                error("Timeout exceeded")
+                break
+            time.sleep(1)
+            topology = api.getTopologyByName(p.name)
+        pass
     elif p.state == State.GET:
         pass
     else:
@@ -239,7 +282,7 @@ def main():
         status = topology[Token.STATUS]
     else:
         status = Status.UNEXISTING
-    module.exit_json(changed=p.changed, status=status.lower())
+    module.exit_json(changed=p.changed, status=status.lower(), logs=logs)
 
 
 from ansible.module_utils.basic import *
